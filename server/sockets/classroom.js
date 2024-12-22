@@ -6,130 +6,197 @@ const handleSocket = (io) => {
   io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
 
-    // Handle joinRoom event
+    // Handle joining a room
     socket.on("joinRoom", async ({ room, name, role }) => {
-      if (!name || !role || !room) {
-        socket.emit("error", { message: "Invalid room or user data." });
-        return;
-      }
-      const roomId = room; // Use a consistent roomId
-      const existingLog = await ClassroomLog.findOne({ roomName: room });
+      try {
+        if (!room || !name || !role) {
+          socket.emit("error", { message: "Invalid room or user data." });
+          return;
+        }
 
-      if (!existingLog && role !== "student") {
-        await ClassroomLog.create({
-          roomId,
-          roomName: room,
-          events: [],
-          createdAt: new Date(),
+        const roomId = room;
+        let classroomLog = await ClassroomLog.findOne({ roomName: room });
+
+        // Create a new classroom log if it doesn't exist
+        if (!classroomLog && role !== "student") {
+          classroomLog = await ClassroomLog.create({
+            roomId,
+            roomName: room,
+            events: [],
+            createdAt: new Date(),
+          });
+        }
+
+        // Upsert user information
+        const user = await User.findOneAndUpdate(
+          { name, roomId },
+          { socketId: socket.id, role },
+          { upsert: true, new: true }
+        );
+
+        // Check if the user is already logged in on another tab
+        const existingUser = await User.findOne({ name, roomId, socketId: { $ne: socket.id } });
+        if (existingUser && role === "teacher") {
+          socket.emit("error", { message: "You are already logged in on another tab." });
+          await User.findOneAndDelete({ socketId: socket.id }); // Remove duplicate login
+          return;
+        }
+
+        socket.join(roomId);
+        console.log(`${name} joined room: ${roomId}`);
+
+        // Log user entry
+        const entryLog = {
+          type: "entry",
+          userRole: role,
+          userName: name,
+          timestamp: new Date(),
+        };
+        await ClassroomLog.findOneAndUpdate({ roomId }, { $push: { events: entryLog } });
+
+        // Fetch all users in the room
+        const users = await User.find({ roomId });
+        const isClassStarted = activeClasses.has(roomId);
+
+        // Notify all clients in the room about the update
+        io.to(roomId).emit("updateClassroom", {
+          students: users.filter((u) => u.role === "student").map((u) => u.name),
+          teachers: users.filter((u) => u.role === "teacher").map((u) => u.name),
+          isClassStarted,
         });
+      } catch (error) {
+        console.error("Error in joinRoom:", error.message);
+        socket.emit("error", { message: "An error occurred while joining the room." });
       }
-
-      const user = await User.findOneAndUpdate(
-        { name, roomId },
-        { socketId: socket.id, role },
-        { upsert: true, new: true }
-      );
-
-      socket.join(roomId);
-      console.log(`${name} joined room: ${roomId}`);
-
-      const entryLog = {
-        type: "entry",
-        userRole: role,
-        userName: name,
-        timestamp: new Date(),
-      };
-
-      await ClassroomLog.findOneAndUpdate(
-        { roomId },
-        { $push: { events: entryLog } }
-      );
-
-      const users = await User.find({ roomId });
-      const isClassStarted = activeClasses.has(roomId);
-
-      io.to(roomId).emit("updateClassroom", {
-        students: users.filter((u) => u.role === "student").map((u) => u.name),
-        teachers: users.filter((u) => u.role === "teacher").map((u) => u.name),
-        isClassStarted,
-      });
     });
 
-    socket.on("startClass", async ({ room }) => {
-      const roomId = room;
+    // Handle starting a class
+    socket.on("startClass", async ({ room, name }) => {
+      try {
+        const roomId = room;
 
-      if (activeClasses.has(roomId)) {
-        socket.emit("error", { message: "Class is already active." });
-        return;
+        // Ensure only one teacher can start a class
+        if (activeClasses.has(roomId)) {
+          socket.emit("error", { message: "Class is already active." });
+          return;
+        }
+
+        // Track the teacher who started the class
+        activeClasses.set(roomId, { teacher: name, version: Date.now() });
+
+        const startLog = {
+          type: "start",
+          teacher: name,
+          version: activeClasses.get(roomId).version,
+          timestamp: new Date(),
+        };
+        await ClassroomLog.findOneAndUpdate(
+          { roomId },
+          { $push: { events: startLog } }
+        );
+
+        const users = await User.find({ roomId });
+
+        io.to(roomId).emit("updateClassroom", {
+          isClassStarted: true,
+          students: users.filter((u) => u.role === "student").map((u) => u.name),
+          teachers: users.filter((u) => u.role === "teacher").map((u) => u.name),
+          classVersion: activeClasses.get(roomId).version,
+        });
+      } catch (error) {
+        console.error("Error in startClass:", error.message);
+        socket.emit("error", { message: "Failed to start the class." });
       }
-
-      activeClasses.set(roomId, true);
-
-      const startLog = {
-        type: "start",
-        timestamp: new Date(),
-      };
-
-      await ClassroomLog.findOneAndUpdate(
-        { roomId },
-        { $push: { events: startLog } }
-      );
-      const users = await User.find({ roomId});
-      console.log("triggering update classroom......")
-      io.to(roomId).emit("updateClassroom", {
-        isClassStarted: true,
-        students: users.filter((u) => u.role === "student").map((u) => u.name),
-        teachers: users.filter((u) => u.role === "teacher").map((u) => u.name),
-      });
     });
 
-    socket.on("endClass", async ({ room }) => {
-      const roomId = room;
+    // Handle ending a class
+    socket.on("endClass", async ({ room, name }) => {
+      try {
+        const roomId = room;
 
-      if (!activeClasses.has(roomId)) {
-        socket.emit("error", { message: "Class is not active." });
-        return;
+        const activeClass = activeClasses.get(roomId);
+        if (!activeClass) {
+          socket.emit("error", { message: "Class is not active." });
+          return;
+        }
+
+        // Only the teacher who started the class can end it
+        if (activeClass.teacher !== name) {
+          socket.emit("error", { message: "Only the teacher who started the class can end it." });
+          return;
+        }
+
+        activeClasses.delete(roomId);
+
+        const endLog = {
+          type: "end",
+          version: activeClass.version,
+          timestamp: new Date(),
+        };
+        await ClassroomLog.findOneAndUpdate(
+          { roomId },
+          { $push: { events: endLog } }
+        );
+
+        io.to(roomId).emit("classEnded", { version: activeClass.version });
+      } catch (error) {
+        console.error("Error in endClass:", error.message);
+        socket.emit("error", { message: "Failed to end the class." });
       }
-
-      activeClasses.delete(roomId);
-
-      const endLog = {
-        type: "end",
-        timestamp: new Date(),
-      };
-
-      await ClassroomLog.findOneAndUpdate(
-        { roomId },
-        { $push: { events: endLog } }
-      );
-
-      io.to(roomId).emit("classEnded");
     });
 
+    // Handle user disconnect
     socket.on("disconnect", async () => {
-      const user = await User.findOneAndDelete({ socketId: socket.id });
-      if (!user) return;
+      try {
+        const user = await User.findOneAndDelete({ socketId: socket.id });
+        if (!user) return;
 
-      const leaveLog = {
-        type: "leave",
-        userRole: user.role,
-        userName: user.name,
-        timestamp: new Date(),
-      };
+        const roomId = user.roomId;
 
-      await ClassroomLog.findOneAndUpdate(
-        { roomId: user.roomId },
-        { $push: { events: leaveLog } }
-      );
+        const leaveLog = {
+          type: "leave",
+          userRole: user.role,
+          userName: user.name,
+          timestamp: new Date(),
+        };
+        await ClassroomLog.findOneAndUpdate({ roomId }, { $push: { events: leaveLog } });
 
-      const users = await User.find({ roomId: user.roomId });
-      const isClassStarted = activeClasses.has(user.roomId);
+        const users = await User.find({ roomId });
+        const activeClass = activeClasses.get(roomId);
 
-      io.to(user.roomId).emit("updateClassroom", {
-        students: users.filter((u) => u.role === "student").map((u) => u.name),
-        teachers: users.filter((u) => u.role === "teacher").map((u) => u.name),
-        isClassStarted,
-      });
+        // If the disconnecting user is the teacher who started the class, end the class
+        if (activeClass?.teacher === user.name) {
+          io.to(roomId).emit("confirmEndClass", {
+            message: "The teacher's session has ended. The class will end unless restarted soon.",
+          });
+
+          setTimeout(async () => {
+            if (activeClasses.get(roomId)?.teacher === user.name) {
+              activeClasses.delete(roomId);
+
+              const endLog = {
+                type: "forced-end",
+                version: activeClass.version,
+                timestamp: new Date(),
+              };
+              await ClassroomLog.findOneAndUpdate(
+                { roomId },
+                { $push: { events: endLog } }
+              );
+
+              io.to(roomId).emit("classEnded", { version: activeClass.version });
+            }
+          }, 30000); // Wait 30 seconds before ending
+        }
+
+        io.to(roomId).emit("updateClassroom", {
+          students: users.filter((u) => u.role === "student").map((u) => u.name),
+          teachers: users.filter((u) => u.role === "teacher").map((u) => u.name),
+          isClassStarted: activeClasses.has(roomId),
+        });
+      } catch (error) {
+        console.error("Error in disconnect:", error.message);
+      }
     });
   });
 };
