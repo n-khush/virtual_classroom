@@ -75,6 +75,7 @@ const handleSocket = (io) => {
         { $push: { events: startLog } }
       );
       const users = await User.find({ roomId});
+      console.log("triggering update classroom......")
       io.to(roomId).emit("updateClassroom", {
         isClassStarted: true,
         students: users.filter((u) => u.role === "student").map((u) => u.name),
