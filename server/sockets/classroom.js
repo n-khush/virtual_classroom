@@ -2,132 +2,135 @@ const User = require("../models/User");
 const ClassroomLog = require("../models/ClassroomLog");
 const activeClasses = new Map();
 
-const handleSocket = (io)=>{
- io.on("connection", (socket) => {
-  console.log("User connected:", socket.id);
+const handleSocket = (io) => {
+  io.on("connection", (socket) => {
+    console.log("User connected:", socket.id);
 
-  // Handle joinRoom event
-  socket.on("joinRoom", async ({ room, name, role }) => {
-    if (!name || !role || !room) {
-      socket.emit("error", { message: "Invalid room or user data." });
-      return;
-    }
+    // Handle joinRoom event
+    socket.on("joinRoom", async ({ room, name, role }) => {
+      if (!name || !role || !room) {
+        socket.emit("error", { message: "Invalid room or user data." });
+        return;
+      }
+      const roomId = room; // Use a consistent roomId
+      const existingLog = await ClassroomLog.findOne({ roomName: room });
 
-    // Add user to the database
-    const user = await User.findOneAndUpdate(
-      { name, roomId: room },
-      { socketId: socket.id, role },
-      { upsert: true, new: true }
-    );
+      if (!existingLog && role !== "student") {
+        await ClassroomLog.create({
+          roomId,
+          roomName: room,
+          events: [],
+          createdAt: new Date(),
+        });
+      }
 
-    // Join the room
-    socket.join(room);
-    console.log(`${name} joined room: ${room}`);
+      const user = await User.findOneAndUpdate(
+        { name, roomId },
+        { socketId: socket.id, role },
+        { upsert: true, new: true }
+      );
 
-    // Log the entry
-    const entryLog = {
-      type: "entry",
-      userRole: role,
-      userName: name,
-      timestamp: new Date(),
-    };
+      socket.join(roomId);
+      console.log(`${name} joined room: ${roomId}`);
 
-    await ClassroomLog.findOneAndUpdate(
-      { roomId: room },
-      { $push: { events: entryLog } },
-      { upsert: true, new: true }
-    );
+      const entryLog = {
+        type: "entry",
+        userRole: role,
+        userName: name,
+        timestamp: new Date(),
+      };
 
-    // Notify all clients in the room
-    const users = await User.find({ roomId: room });
-    const isClassStarted = activeClasses.has(room);
-    console.log("here...");
-    io.to(room).emit("updateClassroom", {
-      students: users.filter((u) => u.role === "student").map((u) => u.name),
-      teachers: users.filter((u) => u.role === "teacher").map((u) => u.name),
-      isClassStarted,
+      await ClassroomLog.findOneAndUpdate(
+        { roomId },
+        { $push: { events: entryLog } }
+      );
+
+      const users = await User.find({ roomId });
+      const isClassStarted = activeClasses.has(roomId);
+
+      io.to(roomId).emit("updateClassroom", {
+        students: users.filter((u) => u.role === "student").map((u) => u.name),
+        teachers: users.filter((u) => u.role === "teacher").map((u) => u.name),
+        isClassStarted,
+      });
     });
 
-    console.log(`${name} (${role}) joined room: ${room}`);
-  });
+    socket.on("startClass", async ({ room }) => {
+      const roomId = room;
 
-  // Handle startClass event
-  socket.on("startClass", async ({ room }) => {
-    if (activeClasses.has(room)) {
-      socket.emit("error", { message: "Class is already active." });
-      return;
-    }
+      if (activeClasses.has(roomId)) {
+        socket.emit("error", { message: "Class is already active." });
+        return;
+      }
 
-    activeClasses.set(room, true);
+      activeClasses.set(roomId, true);
 
-    const startLog = {
-      type: "start",
-      timestamp: new Date(),
-    };
+      const startLog = {
+        type: "start",
+        timestamp: new Date(),
+      };
 
-    await ClassroomLog.findOneAndUpdate(
-      { roomId: room },
-      { $push: { events: startLog } },
-      { upsert: true, new: true }
-    );
+      await ClassroomLog.findOneAndUpdate(
+        { roomId },
+        { $push: { events: startLog } }
+      );
+      const users = await User.find({ roomId});
+      io.to(roomId).emit("updateClassroom", {
+        isClassStarted: true,
+        students: users.filter((u) => u.role === "student").map((u) => u.name),
+        teachers: users.filter((u) => u.role === "teacher").map((u) => u.name),
+      });
+    });
 
-    io.to(room).emit("updateClassroom", { isClassStarted: true });
-    console.log(`Class started in room: ${room}`);
-  });
+    socket.on("endClass", async ({ room }) => {
+      const roomId = room;
 
-  // Handle endClass event
-  socket.on("endClass", async ({ room }) => {
-    if (!activeClasses.has(room)) {
-      socket.emit("error", { message: "Class is not active." });
-      return;
-    }
+      if (!activeClasses.has(roomId)) {
+        socket.emit("error", { message: "Class is not active." });
+        return;
+      }
 
-    activeClasses.delete(room);
+      activeClasses.delete(roomId);
 
-    const endLog = {
-      type: "end",
-      timestamp: new Date(),
-    };
+      const endLog = {
+        type: "end",
+        timestamp: new Date(),
+      };
 
-    await ClassroomLog.findOneAndUpdate(
-      { roomId: room },
-      { $push: { events: endLog } },
-      { upsert: true, new: true }
-    );
+      await ClassroomLog.findOneAndUpdate(
+        { roomId },
+        { $push: { events: endLog } }
+      );
 
-    io.to(room).emit("classEnded");
-    console.log(`Class ended in room: ${room}`);
-  });
+      io.to(roomId).emit("classEnded");
+    });
 
-  // Handle disconnect event
-  socket.on("disconnect", async () => {
-    const user = await User.findOneAndDelete({ socketId: socket.id });
-    if (!user) return;
+    socket.on("disconnect", async () => {
+      const user = await User.findOneAndDelete({ socketId: socket.id });
+      if (!user) return;
 
-    console.log(`${user.name} (${user.role}) left room: ${user.roomId}`);
+      const leaveLog = {
+        type: "leave",
+        userRole: user.role,
+        userName: user.name,
+        timestamp: new Date(),
+      };
 
-    const leaveLog = {
-      type: "leave",
-      userRole: user.role,
-      userName: user.name,
-      timestamp: new Date(),
-    };
+      await ClassroomLog.findOneAndUpdate(
+        { roomId: user.roomId },
+        { $push: { events: leaveLog } }
+      );
 
-    await ClassroomLog.findOneAndUpdate(
-      { roomId: user.roomId },
-      { $push: { events: leaveLog } },
-      { upsert: true, new: true }
-    );
+      const users = await User.find({ roomId: user.roomId });
+      const isClassStarted = activeClasses.has(user.roomId);
 
-    const users = await User.find({ roomId: user.roomId });
-    const isClassStarted = activeClasses.has(user.roomId);
-
-    io.to(user.roomId).emit("updateClassroom", {
-      students: users.filter((u) => u.role === "student").map((u) => u.name),
-      teachers: users.filter((u) => u.role === "teacher").map((u) => u.name),
-      isClassStarted,
+      io.to(user.roomId).emit("updateClassroom", {
+        students: users.filter((u) => u.role === "student").map((u) => u.name),
+        teachers: users.filter((u) => u.role === "teacher").map((u) => u.name),
+        isClassStarted,
+      });
     });
   });
-})
-}
-module.exports = handleSocket
+};
+
+module.exports = handleSocket;

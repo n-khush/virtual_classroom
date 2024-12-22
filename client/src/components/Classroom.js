@@ -11,65 +11,68 @@ const Classroom = () => {
     students: [],
     teachers: [],
     isClassStarted: false,
-  }); // Ensure default structure
+  });
   const [isLoading, setIsLoading] = useState(true);
   const navigate = useNavigate();
   const socket = io(process.env.REACT_APP_SOCKET_URL);
 
+  // Emit joinRoom event on initial load
   useEffect(() => {
     if (!name || !role) {
       alert("Invalid access! Redirecting to room selection...");
-      navigate("/"); // Redirect to the room selection page
+      navigate("/");
       return;
     }
-    console.log("this is line 25")
-
-    // Emit 'joinRoom' event when the component is mounted
     socket.emit("joinRoom", { room, name, role });
-// debugger;
-    // Listen for updates on classroom data
-    socket.on("updateClassroom", (data) => {
-      console.log("update emitted",data)
+
+    // Cleanup
+    return () => socket.disconnect();
+  }, [room, name, role, navigate]);
+
+  // Handle socket events for classroom updates
+  useEffect(() => {
+    const handleUpdateClassroom = (data) => {
       setClassroomData(data || { students: [], teachers: [], isClassStarted: false });
       setIsLoading(false);
 
-      // Redirect if the class hasn't started and the user is a student
       if (!data?.isClassStarted && role === "student") {
-        alert("Class has not started yet! Redirecting to room selection...");
-        navigate("/"); // Redirect student back to room selection
+        alert("Class has not started yet! Redirecting...");
+        navigate("/");
       }
-    });
-
-    // Listen for 'classEnded' event when the class ends
-    socket.on("classEnded", () => {
-      alert("Class has ended! Redirecting to room selection...");
-      debugger;
-      navigate("/"); // Redirect to room selection if class ends
-    });
-
-    // Handle errors from the backend
-    socket.on("error", (error) => {
-      alert(error.message);
-    });
-
-    return () => {
-      socket.disconnect(); // Disconnect from the socket when the component unmounts
     };
-  }, [room, name, role, socket, navigate]);
 
-  // Handle the event to start the class
+    const handleClassEnded = () => {
+      alert("Class has ended! Redirecting...");
+      navigate("/");
+    };
+
+    const handleError = (error) => {
+      alert(error.message);
+    };
+
+    socket.on("updateClassroom", handleUpdateClassroom);
+    socket.on("classEnded", handleClassEnded);
+    socket.on("error", handleError);
+
+    // Cleanup
+    // return () => {
+    //   socket.off("updateClassroom", handleUpdateClassroom);
+    //   socket.off("classEnded", handleClassEnded);
+    //   socket.off("error", handleError);
+    // };
+  }, [navigate, role, socket,name]);
+
+  // Handle class start/end actions
   const handleStartClass = () => {
-    console.log("emitted start")  
     socket.emit("startClass", { room });
   };
 
-  // Handle the event to end the class
   const handleEndClass = () => {
     socket.emit("endClass", { room });
   };
 
   if (isLoading) {
-    return <div>Loading classroom data 21...</div>;
+    return <div>Loading classroom data...</div>;
   }
 
   return (
@@ -82,7 +85,9 @@ const Classroom = () => {
         <h2 className="text-lg font-bold">Teachers:</h2>
         <ul>
           {classroomData.teachers?.length > 0 ? (
-            classroomData.teachers.map((teacher) => <li key={teacher}>{teacher}</li>)
+            classroomData.teachers.map((teacher) => (
+              <li key={teacher}>{teacher}</li>
+            ))
           ) : (
             <p>No teachers are present yet.</p>
           )}
@@ -93,14 +98,15 @@ const Classroom = () => {
         <h2 className="text-lg font-bold">Students:</h2>
         <ul>
           {classroomData.students?.length > 0 ? (
-            classroomData.students.map((student) => <li key={student}>{student}</li>)
+            classroomData.students.map((student) => (
+              <li key={student}>{student}</li>
+            ))
           ) : (
             <p>No students are present yet.</p>
           )}
         </ul>
       </div>
-
-      {/* Teacher-specific controls */}
+          {console.log(role,classroomData,"{{{{{{{{{")}
       {role === "teacher" && (
         <div>
           {!classroomData.isClassStarted ? (

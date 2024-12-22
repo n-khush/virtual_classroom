@@ -1,20 +1,17 @@
 const mongoose = require("mongoose");
 
-const classroomLogSchema = new mongoose.Schema(
-  {
-    roomId: { type: String, required: true },
-    events: [
-      {
-        type: { type: String, enum: ["entry", "leave", "start", "end"], required: true },
-        userRole: { type: String, enum: ["student", "teacher"], required: true },
-        userName: { type: String, required: true },
-        timestamp: { type: Date, default: Date.now },
-      },
-    ],
-  },
-  { timestamps: true }
-);
+const ClassroomLogSchema = new mongoose.Schema({
+  roomId: { type: String, required: true }, // Unique identifier for the room
+  roomName: { type: String, required: true }, // Display name for the room
+  createdAt: { type: Date, default: Date.now },
+  events: [
+    {
+      type: { type: String, required: true }, // "entry", "start", "leave", etc.
+      userRole: String,
+      userName: String,
+      timestamp: { type: Date, required: true },
+    },
+  ],
+});
 
-const ClassroomLog = mongoose.model("ClassroomLog", classroomLogSchema);
-
-module.exports = ClassroomLog;
+module.exports = mongoose.model("ClassroomLog", ClassroomLogSchema);
