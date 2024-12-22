@@ -1,28 +1,29 @@
+// src/components/ClassroomHistory.js
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom'; // Import useNavigate hook
 
 const ClassroomHistory = () => {
-  const { roomId } = useParams()
+  const { roomId } = useParams(); // Get the roomId from the URL
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const navigate = useNavigate(); // Use useNavigate hook to navigate programmatically
 
   useEffect(() => {
     const fetchClassroomLogs = async () => {
       try {
-        const response = await axios.get(`http://localhost:8000/api/reports/${roomId}`);
+        const response = await axios.get(`${process.env.REACT_APP_BACKEND_URL}/${roomId}`);
         setLogs(response.data);
         setLoading(false);
       } catch (err) {
-        console.log(err)
         setError('Error fetching classroom logs');
         setLoading(false);
       }
     };
-    fetchClassroomLogs();
 
-  }, [roomId]);
+    fetchClassroomLogs();
+  }, [roomId]); // Fetch logs when roomId changes
 
   const renderEventDetails = (event) => {
     return (
@@ -36,6 +37,10 @@ const ClassroomHistory = () => {
         <strong>Timestamp:</strong> {new Date(event.timestamp).toLocaleString()}
       </div>
     );
+  };
+
+  const handleGoHome = () => {
+    navigate('/'); // Navigate to the home screen
   };
 
   return (
@@ -57,6 +62,13 @@ const ClassroomHistory = () => {
           </div>
         ))
       )}
+
+      <button
+        onClick={handleGoHome}
+        className="mt-4 px-4 py-2 bg-blue-500 text-white rounded"
+      >
+        Go to Home Screen
+      </button>
     </div>
   );
 };
